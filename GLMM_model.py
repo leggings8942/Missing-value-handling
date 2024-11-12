@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy import stats
+from scipy import stats, special
 
 def poisson_distribution(k, λ):    
     return stats.poisson.pmf(round(k), λ)
@@ -82,6 +82,15 @@ class Update_Rafael:
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
+
+def normal_cumulative(x, loc=0, scale=1):
+    return stats.norm.cdf(x, loc=loc, scale=scale)
+
+def normal_4th_distribution(x):
+    return 2 * np.exp(-(x ** 4))
+
+def normal_4th_cumulative(x):
+    return 0.5 + 1/2 * np.sign(x) * special.gammainc(1/4, x ** 4)
 
 class LogitLinearRegression:
     def __init__(self,
@@ -207,19 +216,19 @@ class LogitLinearRegression:
 
         update = 99
         now_ite = 0
-        while (update > self.tol) and (now_ite < self.max_iterate):
-            output_min  = sigmoid(np.sum(self.alpha1 * x_train_min, axis=1) + self.alpha2).reshape([num_min, 1])
+        while (update_diff > self.tol) and (update > self.tol) and (now_ite < self.max_iterate):
+            output_min  = normal_4th_cumulative(np.sum(self.alpha1 * x_train_min, axis=1) + self.alpha2).reshape([num_min, 1])
             ΔLoss_min   = y_train_min - self.alpha0 * output_min - self.beta1
-            Δoutput_min = output_min * (1 - output_min)
+            Δoutput_min = normal_4th_distribution(np.sum(self.alpha1 * x_train_min, axis=1) + self.alpha2).reshape([num_min, 1])
             
             diff_alpha0 = np.sum(ΔLoss_min * output_min)
             diff_alpha1 = np.sum(ΔLoss_min * self.alpha0 * Δoutput_min * x_train_min, axis=0).reshape([1, s])
             diff_alpha2 = np.sum(ΔLoss_min * self.alpha0 * Δoutput_min)
             diff_beta1  = np.sum(ΔLoss_min)
             
-            output_max  = sigmoid(np.sum(self.alpha1 * x_train_max, axis=1) + self.alpha2).reshape([num_max, 1])
+            output_max  = normal_4th_cumulative(np.sum(self.alpha1 * x_train_max, axis=1) + self.alpha2).reshape([num_max, 1])
             ΔLoss_max   = y_train_max - self.alpha0 * output_max - self.beta1 + np.exp(self.beta2)
-            Δoutput_max = output_max * (1 - output_max)
+            Δoutput_max = normal_4th_distribution(np.sum(self.alpha1 * x_train_max, axis=1) + self.alpha2).reshape([num_max, 1])
             
             diff_alpha0 += np.sum(ΔLoss_max * output_max)
             diff_alpha1 += np.sum(ΔLoss_max * self.alpha0 * Δoutput_max * x_train_max, axis=0).reshape([1, s])
@@ -366,7 +375,7 @@ class LogitLinearRegression:
         if self.isStandardization:
             x_test = (x_test - self.x_standardization[0]) / self.x_standardization[1]
 
-        output = self.alpha0 * sigmoid(np.sum(self.alpha1 * x_test, axis=1) + self.alpha2) + self.beta1
+        output = self.alpha0 * normal_4th_cumulative(np.sum(self.alpha1 * x_test, axis=1) + self.alpha2) + self.beta1
         if self.isStandardization:
             output = output * self.y_standardization[1] + self.y_standardization[0]
         
