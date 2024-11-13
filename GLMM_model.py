@@ -90,7 +90,7 @@ def normal_4th_distribution(x):
     return 2 * np.exp(-(x ** 4))
 
 def normal_4th_cumulative(x):
-    return 0.5 + 1/2 * np.sign(x) * special.gammainc(1/4, x ** 4)
+    return 1/2 + 1/2 * np.sign(x) * special.gammainc(1/4, x ** 4)
 
 class LogitLinearRegression:
     def __init__(self,
@@ -214,8 +214,9 @@ class LogitLinearRegression:
         else:                                # 切片の指定がある場合
             self.beta1 = self.fix_intercept
 
-        update = 99
-        now_ite = 0
+        update_diff = 99
+        update      = 99
+        now_ite     = 0
         while (update_diff > self.tol) and (update > self.tol) and (now_ite < self.max_iterate):
             output_min  = normal_4th_cumulative(np.sum(self.alpha1 * x_train_min, axis=1) + self.alpha2).reshape([num_min, 1])
             ΔLoss_min   = y_train_min - self.alpha0 * output_min - self.beta1
@@ -264,7 +265,7 @@ class LogitLinearRegression:
                 update      = np.sqrt(tmp_alpha0  ** 2 + np.sum(tmp_alpha1  ** 2) + tmp_alpha2  ** 2 + tmp_beta2  ** 2)
                 now_ite     = now_ite + 1
 
-            if (now_ite % 10 == 0) and visible_flg:# 学習状況の可視化
+            if (now_ite % 500 == 0) and visible_flg:# 学習状況の可視化
                 mse = (np.sum(ΔLoss_min ** 2) + np.sum(ΔLoss_max ** 2)) / (num_min + num_max)
                 print(f"ite:{now_ite}  alpha0:{self.alpha0}  alpha1:{self.alpha1}  alpha2:{self.alpha2}  beta1:{self.beta1}  exp(beta2):{np.exp(self.beta2)}  update_diff:{update_diff}  update:{update}  MSE:{mse}", flush=True)
 
