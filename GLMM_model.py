@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy import stats
+from scipy import stats, special
 
 def poisson_distribution(k, λ):    
     return stats.poisson.pmf(round(k), λ)
@@ -14,36 +14,27 @@ def normal_distribution(x, loc=0, scale=1):
 def uniform_distribution(x, loc=0, scale=1):
     return stats.uniform.pdf(x, loc=loc, scale=scale)
 
-def moving_average(w1:int, x_list, y_list):
-    if len(x_list) != len(y_list):
-        raise ValueError()
-    
-    mov_ave = np.convolve(y_list, [1 / w1] * w1, mode='same')
-    return x_list[w1:-w1], mov_ave[w1:-w1]
+def moving_average(w1:int, x_list):
+    mov_ave = np.convolve(x_list, [1 / w1] * w1, mode='same')
+    return mov_ave[w1:-w1]
 
-def diff_convolve(w1:int, x_list, y_list):
-    if len(x_list) != len(y_list):
-        raise ValueError()
-    
-    conv_list = np.convolve(y_list, [0.5, 0, -0.5], mode='full')
-    tuple_xy  = moving_average(w1, x_list[1:-1], conv_list[2:-2])
+def diff_convolve(w1:int, x_list):
+    conv_list = np.convolve(x_list, [0.5, 0, -0.5], mode='full')
+    tuple_xy  = moving_average(w1, conv_list[2:-2])
     return tuple_xy
 
-def arg_extremum(w1:int, α1:int, x_list, y_list):
-    if len(x_list) != len(y_list):
-        raise ValueError()
+def arg_extremum(w1:int, α1:int, x_list):
+    x_list = diff_convolve(w1, x_list)
+    x_list = diff_convolve(w1, x_list)
     
-    x_list, y_list = diff_convolve(w1, x_list, y_list)
-    x_list, y_list = diff_convolve(w1, x_list, y_list)
-    
-    convol_y  = np.diff(y_list)
+    convol_y  = np.diff(x_list)
     sign_list = np.sign(convol_y[:-1] * convol_y[1:])
-    base_std  = np.std(y_list)
+    base_std  = np.std(x_list)
     
-    sign_idx  = np.where(((sign_list == -1) & (convol_y[1:] > 0)) & (y_list[1:-1] < -α1 * base_std))[0]
+    sign_idx  = np.where(((sign_list == -1) & (convol_y[1:] > 0)) & (x_list[1:-1] < -α1 * base_std))[0]
     extre_min = 1 + sign_idx
     
-    sign_idx  = np.where(((sign_list == -1) & (convol_y[1:] < 0)) & (y_list[1:-1] >  α1 * base_std))[0]
+    sign_idx  = np.where(((sign_list == -1) & (convol_y[1:] < 0)) & (x_list[1:-1] >  α1 * base_std))[0]
     extre_max = 1 + sign_idx
     
     return extre_min + 2 * (w1 + 1), extre_max + 2 * (w1 + 1)
@@ -89,17 +80,46 @@ class Update_Rafael:
 
 
 
-class SigmoidLinearRegression:
-    def __init__(self, isStandardization=True, tol=1e-7, fix_intercept=None, max_iterate=100000, learning_rate=0.001, random_state=None):
-        self.alpha   = np.array([], dtype=np.float64)
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+def normal_cumulative(x, loc=0, scale=1):
+    return stats.norm.cdf(x, loc=loc, scale=scale)
+
+def normal_4th_distribution(x):
+    return 2 * np.exp(-(x ** 4))
+
+def normal_4th_cumulative(x):
+    return 1/2 + 1/2 * np.sign(x) * special.gammainc(1/4, x ** 4)
+
+class LogitLinearRegression:
+    def __init__(self,
+                 isStandardization:bool,          # 入力値の正規化処理の有無
+                 window_size:int = 11,            # 移動平均処理時のウィンドウサイズ
+                 norm_z:float = 2.17,             # 標準正規分布のZ値
+                 tol:float = 1e-7,                # 許容誤差
+                 fix_intercept:float|None = None, # 切片の設定値(固定)
+                 max_iterate:int = 100000,        # 最大ループ回数
+                 learning_rate:float = 0.001,     # 学習係数
+                 random_state:int|None = None):   # 乱数のシード値
         self.alpha0  = np.float64(0.0)
+        self.alpha1  = np.array([], dtype=np.float64)
+        self.alpha2  = np.float64(0.0)
+        self.beta1   = np.float64(0.0)
+        self.beta2   = np.float64(0.0)
         self.isStandardization = isStandardization
-        self.standardization = np.empty([2, 1])
-        self.tol = tol
-        self.fix_intercept = fix_intercept
-        self.max_iterate = max_iterate
-        self.correct_alpha   = Update_Rafael(alpha=learning_rate)
-        self.correct_alpha0  = Update_Rafael(alpha=learning_rate)
+        self.x_standardization = np.empty([2, 1])
+        self.y_standardization = np.empty([2, 1])
+        self.window_size       = window_size
+        self.norm_z            = norm_z
+        self.tol               = tol
+        self.fix_intercept     = fix_intercept
+        self.max_iterate       = max_iterate
+        self.correct_alpha0    = Update_Rafael(alpha=learning_rate)
+        self.correct_alpha1    = Update_Rafael(alpha=learning_rate)
+        self.correct_alpha2    = Update_Rafael(alpha=learning_rate)
+        self.correct_beta1     = Update_Rafael(alpha=learning_rate)
+        self.correct_beta2     = Update_Rafael(alpha=learning_rate)
 
         self.random_state = random_state
         if random_state != None:
@@ -107,11 +127,8 @@ class SigmoidLinearRegression:
             self.random.seed(seed=self.random_state)
         else:
             self.random = np.random
-        
-        if self.fix_intercept != None:
-            self.isStandardization = False
 
-    def fit(self, x_train, y_train, visible_flg=False):
+    def fit(self, x_train, y_train, visible_flg:bool=False):
         if type(x_train) is pd.core.frame.DataFrame:
             x_train = x_train.to_numpy()
 
@@ -130,75 +147,127 @@ class SigmoidLinearRegression:
             print("エラー：：次元数が一致しません。")
             return False
         
-        num, s = x_train.shape
-        x_train = np.log(x_train + 1)
-
+        # 正規化指定の有無
         if self.isStandardization:
-            self.standardization = np.empty([2, s])
-            self.standardization[0] = np.mean(x_train, axis=0)
-            self.standardization[1] = np.std( x_train, axis=0)
+            # x軸の正規化
+            _, s = x_train.shape
+            self.x_standardization    = np.empty([2, s])
+            self.x_standardization[0] = np.mean(x_train, axis=0)
+            self.x_standardization[1] = np.std( x_train, axis=0)
 
-            if np.all(self.standardization[1] == 0):
-                self.alpha  = np.log(y_train[0] + 1e-16) / x_train[0, :] / s
-                self.alpha0 = 0
-                self.standardization[0] = 0
-                self.standardization[1] = 1
-                return True
+            # 標準偏差が0の場合
+            zero_judge = (self.x_standardization[1] == 0)
+            self.x_standardization[0][zero_judge] = 0
+            self.x_standardization[1][zero_judge] = 1
 
-            x_train = (x_train - self.standardization[0]) / self.standardization[1]
-        elif np.all(np.std( x_train, axis=0) == 0):
-            self.alpha  = np.log(y_train[0] + 1e-16) / x_train[0, :] / s
-            self.alpha0 = 0
-            return True
-        y_train = y_train.reshape([num, 1])
+            x_train = (x_train - self.x_standardization[0]) / self.x_standardization[1]
+            
+            # y軸の正規化
+            self.y_standardization    = np.empty(2)
+            self.y_standardization[0] = np.mean(y_train)
+            self.y_standardization[1] = np.std( y_train)
 
-        if self.fix_intercept == None:
-            #正規方程式
-            A = np.hstack([x_train, np.ones([num, 1])])
-            b = y_train.reshape([num])
+            # 標準偏差が0の場合
+            if self.y_standardization[1] == 0:
+                self.y_standardization[0] = 0
+                self.y_standardization[1] = 1
 
-            x = np.dot(np.linalg.inv(np.dot(A.T, A)), np.dot(A.T, b))
-            self.alpha, self.alpha0 = x[0:s], x[s]
-
+            y_train = (y_train - self.y_standardization[0]) / self.y_standardization[1]
+        
+        # 標準正規分布の確立分布　数表
+        # URL:https://kyozaikenkyu-statistics.blog.jp/%E6%A8%99%E6%BA%96%E6%AD%A3%E8%A6%8F%E5%88%86%E5%B8%83%E6%95%B0%E8%A1%A8.pdf
+        # 主に以下の値が利用されると想定する
+        # 優位水準8%   (片側4.0%) ・・・1.75
+        # 優位水準5%   (片側2.5%) ・・・1.96
+        # 優位水準3%   (片側1.5%) ・・・2.17
+        # 優位水準1%   (片側0.5%) ・・・2.58
+        # 優位水準0.5% (片側0.25%)・・・2.81
+        
+        extre_min, extre_max = arg_extremum(self.window_size, self.norm_z, y_train)
+        if (len(extre_min) == 0) or (len(extre_max) == 0): # 候補点が発見できない場合
+            extre_min = round(len(y_train) / 2)
+            extre_max = round(len(y_train) / 2)
         else:
-            self.alpha, self.alpha0 = self.random.random([1, s]), self.fix_intercept
-            self.alpha = self.alpha.reshape([1, s])
+            extre_min, extre_max = np.min(extre_min), np.max(extre_max)
+        
+        if extre_min > extre_max:                          # 始値 > 終値 となっている場合
+            extre_min = round(len(y_train) / 2)
+            extre_max = round(len(y_train) / 2)
+        
+        x_train_min, y_train_min = x_train[:extre_min, :], y_train[:extre_min]
+        x_train_max, y_train_max = x_train[extre_max:, :], y_train[extre_max:]
+        
+        num_min, s = x_train_min.shape
+        num_max, _ = x_train_max.shape
 
-            update = 99
-            now_ite = 0
-            while (update > self.tol) and (now_ite < self.max_iterate):
-                diff_alpha   = np.zeros(self.alpha.shape)
-                diff_alpha0  = np.float64(0)
+        y_train_min = y_train_min.reshape([num_min, 1])
+        y_train_max = y_train_max.reshape([num_max, 1])
 
-                if self.fix_intercept != None:
-                    self.alpha0 = self.fix_intercept
+        # 学習係数の初期化
+        self.alpha0 = self.random.random()
+        self.alpha1 = self.random.random([1, s])
+        self.alpha2 = self.random.random()
+        self.beta2  = self.random.random()
+        
+        if self.fix_intercept == None:       # 切片の指定がない場合
+            self.beta1 = self.random.random()
+        else:                                # 切片の指定がある場合
+            self.beta1 = self.fix_intercept
 
-                lambda_vec = np.sum(self.alpha * x_train, axis=1) + self.alpha0
-                lambda_vec = lambda_vec.reshape([num, 1])
+        update_diff = 99
+        update      = 99
+        now_ite     = 0
+        while (update_diff > self.tol) and (update > self.tol) and (now_ite < self.max_iterate):
+            output_min  = normal_4th_cumulative(np.sum(self.alpha1 * x_train_min, axis=1) + self.alpha2).reshape([num_min, 1])
+            ΔLoss_min   = y_train_min - self.alpha0 * output_min - self.beta1
+            Δoutput_min = normal_4th_distribution(np.sum(self.alpha1 * x_train_min, axis=1) + self.alpha2).reshape([num_min, 1])
+            
+            diff_alpha0 = np.sum(ΔLoss_min * output_min)
+            diff_alpha1 = np.sum(ΔLoss_min * self.alpha0 * Δoutput_min * x_train_min, axis=0).reshape([1, s])
+            diff_alpha2 = np.sum(ΔLoss_min * self.alpha0 * Δoutput_min)
+            diff_beta1  = np.sum(ΔLoss_min)
+            
+            output_max  = normal_4th_cumulative(np.sum(self.alpha1 * x_train_max, axis=1) + self.alpha2).reshape([num_max, 1])
+            ΔLoss_max   = y_train_max - self.alpha0 * output_max - self.beta1 + np.exp(self.beta2)
+            Δoutput_max = normal_4th_distribution(np.sum(self.alpha1 * x_train_max, axis=1) + self.alpha2).reshape([num_max, 1])
+            
+            diff_alpha0 += np.sum(ΔLoss_max * output_max)
+            diff_alpha1 += np.sum(ΔLoss_max * self.alpha0 * Δoutput_max * x_train_max, axis=0).reshape([1, s])
+            diff_alpha2 += np.sum(ΔLoss_max * self.alpha0 * Δoutput_max)
+            diff_beta1  += np.sum(ΔLoss_max)
+            diff_beta2   = np.sum(ΔLoss_max * np.exp(self.beta2))
+            
+            diff_alpha0 = diff_alpha0 / (num_min + num_max)
+            diff_alpha1 = diff_alpha1 / (num_min + num_max)
+            diff_alpha2 = diff_alpha2 / (num_min + num_max)
+            diff_beta1  = diff_beta1  / (num_min + num_max)
+            diff_beta2  = diff_beta2  / num_max
 
-                diff_alpha_calc = y_train - lambda_vec
+            tmp_alpha0  = self.correct_alpha0.update(diff_alpha0)
+            self.alpha0 += tmp_alpha0
+            tmp_alpha1  = self.correct_alpha1.update(diff_alpha1)
+            self.alpha1 += tmp_alpha1
+            tmp_alpha2  = self.correct_alpha2.update(diff_alpha2)
+            self.alpha2 += tmp_alpha2
+            tmp_beta2   = self.correct_beta2.update(-diff_beta2)
+            self.beta2  += tmp_beta2
+            
+            if self.fix_intercept == None:   # 切片の指定がない場合
+                tmp_beta1  = self.correct_beta1.update(diff_beta1)
+                self.beta1 += tmp_beta1
                 
-                diff_alpha   = np.sum(diff_alpha_calc * x_train, axis=0).reshape([1, s]) / num
-                diff_alpha0  = np.sum(diff_alpha_calc)                                   / num
+                update_diff = np.sqrt(diff_alpha0 ** 2 + np.sum(diff_alpha1 ** 2) + diff_alpha2 ** 2 + diff_beta1 ** 2 + diff_beta2 ** 2)
+                update      = np.sqrt(tmp_alpha0  ** 2 + np.sum(tmp_alpha1  ** 2) + tmp_alpha2  ** 2 + tmp_beta1  ** 2 + tmp_beta2  ** 2)
+                now_ite     = now_ite + 1
+                
+            else:                            # 切片の指定がある場合
+                update_diff = np.sqrt(diff_alpha0 ** 2 + np.sum(diff_alpha1 ** 2) + diff_alpha2 ** 2 + diff_beta2 ** 2)
+                update      = np.sqrt(tmp_alpha0  ** 2 + np.sum(tmp_alpha1  ** 2) + tmp_alpha2  ** 2 + tmp_beta2  ** 2)
+                now_ite     = now_ite + 1
 
-                tmp_alpha    = self.correct_alpha.update(  diff_alpha)
-                self.alpha   += tmp_alpha
-                tmp_alpha0   = self.correct_alpha0.update( diff_alpha0)
-                self.alpha0  += tmp_alpha0
-
-                update_diff = np.sqrt(np.sum(diff_alpha ** 2) + diff_alpha0 ** 2)
-                update  = np.sqrt(np.sum(tmp_alpha ** 2) + tmp_alpha0 ** 2)
-                now_ite = now_ite + 1
-
-                if self.fix_intercept != None:
-                    update  = np.sqrt(np.sum(tmp_alpha ** 2))
-
-                if (now_ite % 10 == 0) and visible_flg:
-                    lambda_ = np.sum(self.alpha * x_train, axis=1) + self.alpha0
-                    lambda_ = lambda_.reshape([num, 1])
-                    mse     = np.sum((y_train - lambda_) ** 2) / num
-
-                    print(f"ite:{now_ite}  alpha0:{self.alpha0}  alpha:{self.alpha}  update_diff:{update_diff}  update:{update}  MSE:{mse}", flush=True)
+            if (now_ite % 500 == 0) and visible_flg:# 学習状況の可視化
+                mse = (np.sum(ΔLoss_min ** 2) + np.sum(ΔLoss_max ** 2)) / (num_min + num_max)
+                print(f"ite:{now_ite}  alpha0:{self.alpha0}  alpha1:{self.alpha1}  alpha2:{self.alpha2}  beta1:{self.beta1}  exp(beta2):{np.exp(self.beta2)}  update_diff:{update_diff}  update:{update}  MSE:{mse}", flush=True)
 
         return True
     
@@ -289,7 +358,7 @@ class SigmoidLinearRegression:
 
         return log_likelihood + reliability
 
-    def predict(self, x_test, sample=100, step=1):
+    def predict(self, x_test):
         if type(x_test) is pd.core.frame.DataFrame:
             x_test = x_test.to_numpy()
         
@@ -300,15 +369,15 @@ class SigmoidLinearRegression:
             print(f"x_train dims = {x_test.ndim}")
             print("エラー：：次元数が一致しません。")
             return False
-        
-        x_test = np.log(x_test + 1)
 
         if self.fix_intercept != None:
-            self.alpha0 = self.fix_intercept
+            self.beta1 = self.fix_intercept
         
         if self.isStandardization:
-            x_test = (x_test - self.standardization[0]) / self.standardization[1]
+            x_test = (x_test - self.x_standardization[0]) / self.x_standardization[1]
 
-        lambda_vec = np.sum(self.alpha * x_test, axis=1) + self.alpha0
+        output = self.alpha0 * normal_4th_cumulative(np.sum(self.alpha1 * x_test, axis=1) + self.alpha2) + self.beta1
+        if self.isStandardization:
+            output = output * self.y_standardization[1] + self.y_standardization[0]
         
-        return lambda_vec
+        return output
